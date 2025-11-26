@@ -1,0 +1,1129 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SQLite 在线编辑器</title>
+    <style>
+        /* 引入xst.woff2全局字体 */
+        @font-face {font-family: 'Xst';src: url('xst.woff2') format('woff2');}
+        * {font-family: 'Xst', 楷体, "STKaiti", "PingFang SC", "Droid Sans Fallback", serif;}
+    </style>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Font Awesome -->
+    <link href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css" rel="stylesheet">
+    <!-- SQLite Wasm (多CDN备选) -->
+    <script>
+        // 手动加载 SQL.js，避免自动加载失败
+        (function loadSqlJs() {
+            const script = document.createElement('script');
+            // 主CDN + 备用CDN 列表
+            const cdnList = [
+                'https://cdn.jsdelivr.net/npm/sql.js@1.8.0/dist/sql-wasm.min.js',
+                'https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/sql-wasm.min.js',
+                'https://unpkg.com/sql.js@1.8.0/dist/sql-wasm.min.js'
+            ];
+            
+            let currentCdnIndex = 0;
+            
+            function tryLoadNextCdn() {
+                if (currentCdnIndex >= cdnList.length) {
+                    console.error('所有CDN加载失败');
+                    document.getElementById('loading-status').textContent = 'SQL.js 加载失败，请检查网络或刷新页面';
+                    document.getElementById('loading-overlay').classList.add('error');
+                    return;
+                }
+                
+                const cdnUrl = cdnList[currentCdnIndex];
+                script.src = cdnUrl;
+                script.async = true;
+                script.onload = () => {
+                    console.log(`SQL.js 加载成功 (CDN: ${cdnUrl})`);
+                };
+                script.onerror = () => {
+                    console.error(`SQL.js 加载失败 (CDN: ${cdnUrl})`);
+                    currentCdnIndex++;
+                    tryLoadNextCdn();
+                };
+                
+                document.head.appendChild(script);
+            }
+            
+            tryLoadNextCdn();
+        })();
+    </script>
+    
+    <!-- 自定义配置 -->
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#2563eb',
+                        secondary: '#475569',
+                        accent: '#3b82f6',
+                        neutral: '#f1f5f9',
+                        dark: '#1e293b'
+                    },
+                    fontFamily: {
+                        mono: ['Consolas', 'Monaco', 'monospace'],
+                        sans: ['Inter', 'system-ui', 'sans-serif']
+                    }
+                }
+            }
+        }
+    </script>
+    
+    <style type="text/tailwindcss">
+        @layer utilities {
+            .content-auto {
+                content-visibility: auto;
+            }
+            /* 降低编辑器高度 - 核心修改 */
+            .editor-height {
+                height: calc(100vh - 350px); /* 比原来更高的偏移，降低高度 */
+                max-height: 400px; /* 最大高度限制 */
+            }
+            .mobile-editor-height {
+                height: calc(100vh - 400px);
+                max-height: 300px; /* 移动端更小 */
+            }
+            .table-scroll {
+                max-height: calc(100vh - 400px);
+                overflow-y: auto;
+            }
+            .mobile-table-scroll {
+                max-height: calc(100vh - 450px);
+                overflow-y: auto;
+            }
+            .drag-over {
+                @apply bg-primary/10 border-2 border-primary/50;
+            }
+            .loading-spinner {
+                border-top-color: #2563eb;
+                animation: spinner 0.8s linear infinite;
+            }
+            @keyframes spinner {
+                to { transform: rotate(360deg); }
+            }
+            #loading-overlay.error p {
+                color: #ef4444 !important;
+            }
+            #loading-overlay.error .loading-spinner {
+                border-top-color: #ef4444 !important;
+            }
+            /* 操作按钮样式 */
+            .action-btn {
+                @apply px-2 py-1 rounded text-xs transition-all;
+            }
+            .edit-btn {
+                @apply bg-blue-500 text-white hover:bg-blue-600;
+            }
+            .delete-btn {
+                @apply bg-red-500 text-white hover:bg-red-600;
+            }
+            .add-btn {
+                @apply bg-green-500 text-white hover:bg-green-600;
+            }
+        }
+    </style>
+</head>
+<body class="bg-gray-50 text-dark font-sans">
+    <!-- 加载中提示 -->
+    <div id="loading-overlay" class="fixed inset-0 bg-white/90 z-50 flex items-center justify-center">
+        <div class="text-center">
+            <div class="w-12 h-12 border-4 border-gray-200 rounded-full loading-spinner mx-auto mb-4"></div>
+            <p id="loading-status" class="text-lg text-primary">正在加载 SQLite 引擎...</p>
+            <p class="text-sm text-gray-500 mt-2">这可能需要几秒钟，请稍候...</p>
+            <button id="reload-btn" class="mt-4 px-4 py-2 bg-primary text-white rounded-md hidden" onclick="window.location.reload()">
+                点击重试
+            </button>
+        </div>
+    </div>
+
+    <!-- 拖入文件遮罩层 -->
+    <div id="drag-overlay" class="fixed inset-0 bg-black/70 z-50 flex items-center justify-center hidden">
+        <div class="bg-white rounded-lg p-8 max-w-md w-full text-center">
+            <i class="fa fa-cloud-upload text-primary text-5xl mb-4"></i>
+            <h3 class="text-xl font-bold mb-2">拖入文件到此处</h3>
+            <p class="text-gray-600 mb-4">支持 .db / .sqlite / .sqlite3 格式的 SQLite 文件</p>
+            <div class="border-2 border-dashed border-primary/30 rounded-lg p-6">
+                <p class="text-lg">释放文件以上传</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- 编辑弹窗 -->
+    <div id="edit-modal" class="fixed inset-0 bg-black/50 z-50 flex items-center justify-center hidden">
+        <div class="bg-white rounded-lg p-6 max-w-lg w-full mx-4">
+            <div class="flex justify-between items-center mb-4">
+                <h3 id="modal-title" class="text-xl font-bold text-primary">编辑数据</h3>
+                <button id="close-modal" class="text-gray-500 hover:text-gray-700">
+                    <i class="fa fa-times text-xl"></i>
+                </button>
+            </div>
+            <div id="form-container" class="space-y-4 max-h-[calc(100vh-200px)] overflow-y-auto">
+                <!-- 动态生成表单 -->
+            </div>
+            <div class="flex justify-end gap-2 mt-6">
+                <button id="cancel-btn" class="px-4 py-2 bg-gray-200 rounded-md hover:bg-gray-300">取消</button>
+                <button id="save-btn" class="px-4 py-2 bg-primary text-white rounded-md hover:bg-primary/90">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 添加数据弹窗 -->
+    <div id="add-modal" class="fixed inset-0 bg-black/50 z-50 flex items-center justify-center hidden">
+        <div class="bg-white rounded-lg p-6 max-w-lg w-full mx-4">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="text-xl font-bold text-primary">添加数据</h3>
+                <button id="close-add-modal" class="text-gray-500 hover:text-gray-700">
+                    <i class="fa fa-times text-xl"></i>
+                </button>
+            </div>
+            <div id="add-form-container" class="space-y-4 max-h-[calc(100vh-200px)] overflow-y-auto">
+                <!-- 动态生成表单 -->
+            </div>
+            <div class="flex justify-end gap-2 mt-6">
+                <button id="cancel-add-btn" class="px-4 py-2 bg-gray-200 rounded-md hover:bg-gray-300">取消</button>
+                <button id="save-add-btn" class="px-4 py-2 bg-primary text-white rounded-md hover:bg-primary/90">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 顶部导航 -->
+    <header class="bg-white shadow-sm sticky top-0 z-10">
+        <div class="container mx-auto px-4 py-3 flex flex-col md:flex-row justify-between items-center">
+            <div class="flex items-center mb-3 md:mb-0">
+                <i class="fa fa-database text-primary text-2xl mr-2"></i>
+                <h1 class="text-xl md:text-2xl font-bold text-primary">SQLite 在线编辑器</h1>
+            </div>
+            
+            <div class="flex flex-wrap gap-2">
+                <label for="file-upload" class="cursor-pointer bg-primary hover:bg-primary/90 text-white px-4 py-2 rounded-md transition-all flex items-center">
+                    <i class="fa fa-upload mr-2"></i>
+                    <span>上传文件</span>
+                </label>
+                <input id="file-upload" type="file" accept=".db,.sqlite,.sqlite3" class="hidden" />
+                
+                <button id="new-db-btn" class="bg-secondary hover:bg-secondary/90 text-white px-4 py-2 rounded-md transition-all flex items-center disabled:opacity-50 disabled:cursor-not-allowed">
+                    <i class="fa fa-plus mr-2"></i>
+                    <span>新建数据库</span>
+                </button>
+                
+                <button id="save-db-btn" class="bg-accent hover:bg-accent/90 text-white px-4 py-2 rounded-md transition-all flex items-center hidden disabled:opacity-50 disabled:cursor-not-allowed">
+                    <i class="fa fa-save mr-2"></i>
+                    <span>保存文件</span>
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <main class="container mx-auto px-4 py-6" id="main-container">
+        <!-- 数据表列表 -->
+        <div class="mb-6 bg-white rounded-lg shadow-sm p-4">
+            <h2 class="text-lg font-semibold mb-3 flex items-center">
+                <i class="fa fa-table text-primary mr-2"></i>
+                数据表
+            </h2>
+            <div id="table-list" class="grid grid-cols-2 md:grid-cols-4 gap-2">
+                <!-- 数据表项将动态生成 -->
+                <div class="text-gray-500 italic">SQLite 引擎加载中...</div>
+            </div>
+        </div>
+
+        <!-- SQL 编辑器区域 -->
+        <div class="mb-6 bg-white rounded-lg shadow-sm p-4">
+            <div class="flex justify-between items-center mb-3">
+                <h2 class="text-lg font-semibold flex items-center">
+                    <i class="fa fa-code text-primary mr-2"></i>
+                    SQL 编辑器
+                </h2>
+                <div class="flex gap-2">
+                    <button id="run-sql-btn" class="bg-green-600 hover:bg-green-700 text-white px-4 py-1 rounded-md transition-all flex items-center disabled:opacity-50 disabled:cursor-not-allowed">
+                        <i class="fa fa-play mr-2"></i>
+                        <span class="hidden sm:inline">执行 SQL</span>
+                    </button>
+                    <button id="clear-sql-btn" class="bg-red-500 hover:bg-red-600 text-white px-4 py-1 rounded-md transition-all flex items-center">
+                        <i class="fa fa-trash mr-2"></i>
+                        <span class="hidden sm:inline">清空</span>
+                    </button>
+                </div>
+            </div>
+            <!-- 降低高度的编辑器 -->
+            <textarea id="sql-editor" class="w-full border border-gray-300 rounded-md p-3 font-mono text-sm editor-height md:editor-height mobile-editor-height focus:ring-2 focus:ring-primary/50 focus:border-primary outline-none transition-all resize-y" placeholder="SQLite 引擎加载完成后即可输入 SQL 语句..."></textarea>
+        </div>
+
+        <!-- 查询结果区域 -->
+        <div class="bg-white rounded-lg shadow-sm p-4">
+            <div class="flex justify-between items-center mb-3">
+                <h2 class="text-lg font-semibold flex items-center">
+                    <i class="fa fa-list-alt text-primary mr-2"></i>
+                    查询结果
+                </h2>
+                <!-- 添加数据按钮 -->
+                <button id="add-data-btn" class="add-btn action-btn hidden">
+                    <i class="fa fa-plus mr-1"></i> 添加数据
+                </button>
+            </div>
+            <div id="result-message" class="mb-3 text-gray-600 italic">SQLite 引擎加载中...</div>
+            
+            <!-- 结果表格 -->
+            <div id="result-container" class="hidden overflow-x-auto table-scroll md:table-scroll mobile-table-scroll">
+                <table class="min-w-full divide-y divide-gray-200">
+                    <thead id="result-header" class="bg-gray-50"></thead>
+                    <tbody id="result-body" class="bg-white divide-y divide-gray-200"></tbody>
+                </table>
+            </div>
+            
+            <!-- 执行状态 -->
+            <div id="execution-status" class="mt-3 text-sm hidden"></div>
+        </div>
+    </main>
+
+    <footer class="bg-white border-t border-gray-200 py-4 mt-8">
+        <div class="container mx-auto px-4 text-center text-gray-600 text-sm">
+            <p>SQLite 在线编辑器 | 支持手机和电脑访问 | 所有操作均在本地完成，数据不会上传</p>
+        </div>
+    </footer>
+
+    <script>
+        // 全局变量
+        let db;
+        let sqljs = null;
+        let isSqlJsLoaded = false;
+        let currentTable = ''; // 当前选中的表
+        let currentRowData = {}; // 当前编辑的行数据
+        let tableColumns = []; // 当前表的列信息
+        // 加载超时时间（15秒）
+        const LOAD_TIMEOUT = 15000;
+        
+        // 初始化 SQL.js (非阻塞 + 超时处理)
+        function initSqlJsWithTimeout() {
+            return new Promise((resolve, reject) => {
+                // 超时处理
+                const timeoutId = setTimeout(() => {
+                    reject(new Error('SQL.js 加载超时（15秒），请检查网络或刷新页面'));
+                }, LOAD_TIMEOUT);
+                
+                // 轮询检查 initSqlJs 是否可用
+                const checkInterval = setInterval(() => {
+                    if (typeof window.initSqlJs === 'function') {
+                        clearInterval(checkInterval);
+                        clearTimeout(timeoutId);
+                        
+                        // 执行初始化
+                        window.initSqlJs({
+                            locateFile: (file) => {
+                                // 多CDN备选加载 wasm 文件
+                                const wasmCdnList = [
+                                    `https://cdn.jsdelivr.net/npm/sql.js@1.8.0/dist/${file}`,
+                                    `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/${file}`,
+                                    `https://unpkg.com/sql.js@1.8.0/dist/${file}`
+                                ];
+                                // 返回第一个可用的CDN
+                                return wasmCdnList[0];
+                            }
+                        }).then((instance) => {
+                            sqljs = instance;
+                            isSqlJsLoaded = true;
+                            resolve(instance);
+                        }).catch((err) => {
+                            reject(new Error(`SQL.js 初始化失败: ${err.message}`));
+                        });
+                    }
+                }, 200);
+            });
+        }
+
+        // 通用消息提示函数 - 右上角弹窗形式
+        function showMessage(text, type = 'info') {
+            // 创建弹窗元素
+            const toast = document.createElement('div');
+            toast.className = `fixed top-4 right-4 px-4 py-3 rounded-md shadow-lg z-50 transition-all duration-300 transform translate-x-full opacity-0`;
+            
+            // 添加对应样式
+            if (type === 'error') {
+                toast.classList.add('bg-red-500', 'text-white');
+            } else if (type === 'success') {
+                toast.classList.add('bg-green-600', 'text-white');
+            } else if (type === 'info') {
+                toast.classList.add('bg-blue-500', 'text-white');
+            }
+            
+            // 设置文本内容
+            toast.textContent = text;
+            
+            // 添加到文档
+            document.body.appendChild(toast);
+            
+            // 显示弹窗（动画效果）
+            setTimeout(() => {
+                toast.classList.remove('translate-x-full', 'opacity-0');
+            }, 10);
+            
+            // 3秒后自动消失
+            setTimeout(() => {
+                toast.classList.add('translate-x-full', 'opacity-0');
+                // 动画结束后移除元素
+                setTimeout(() => {
+                    if (document.body.contains(toast)) {
+                        document.body.removeChild(toast);
+                    }
+                }, 300);
+            }, 3000);
+        }
+
+        // 创建数据库实例 (安全封装)
+        function createDatabase(data) {
+            try {
+                // 双重检查 sqljs 是否有效
+                if (!isSqlJsLoaded || !sqljs || typeof sqljs.Database !== 'function') {
+                    throw new Error('SQLite 引擎未正确初始化，无法创建数据库');
+                }
+                
+                // 创建数据库实例
+                if (data) {
+                    return new sqljs.Database(data);
+                } else {
+                    return new sqljs.Database();
+                }
+            } catch (error) {
+                console.error('创建数据库失败:', error);
+                throw new Error(`创建数据库失败: ${error.message}`);
+            }
+        }
+
+        // 获取表的列信息
+        function getTableColumns(tableName) {
+            try {
+                const result = db.exec(`PRAGMA table_info(${tableName})`);
+                if (result && result.length > 0 && result[0].values) {
+                    return result[0].values.map(col => ({
+                        name: col[1],
+                        type: col[2],
+                        notNull: col[3],
+                        defaultValue: col[4],
+                        primaryKey: col[5]
+                    }));
+                }
+                return [];
+            } catch (error) {
+                console.error('获取列信息失败:', error);
+                return [];
+            }
+        }
+
+        // 生成编辑表单
+        function generateEditForm(data) {
+            const formContainer = document.getElementById('form-container');
+            formContainer.innerHTML = '';
+            
+            tableColumns.forEach(col => {
+                const value = data[col.name] !== undefined ? data[col.name] : '';
+                
+                const formGroup = document.createElement('div');
+                formGroup.className = 'space-y-2';
+                
+                const label = document.createElement('label');
+                label.className = 'block text-sm font-medium text-gray-700';
+                label.textContent = `${col.name} ${col.primaryKey ? '(主键)' : ''} ${col.notNull ? '(必填)' : ''}`;
+                
+                const input = document.createElement('input');
+                input.type = col.type.toLowerCase().includes('int') ? 'number' : 'text';
+                input.className = 'w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary/50';
+                input.name = col.name;
+                input.value = value || '';
+                if (col.primaryKey) input.readOnly = true; // 主键只读
+                
+                formGroup.appendChild(label);
+                formGroup.appendChild(input);
+                formContainer.appendChild(formGroup);
+            });
+        }
+
+        // 生成添加表单
+        function generateAddForm() {
+            const formContainer = document.getElementById('add-form-container');
+            formContainer.innerHTML = '';
+            
+            tableColumns.forEach(col => {
+                const formGroup = document.createElement('div');
+                formGroup.className = 'space-y-2';
+                
+                const label = document.createElement('label');
+                label.className = 'block text-sm font-medium text-gray-700';
+                label.textContent = `${col.name} ${col.primaryKey ? '(主键)' : ''} ${col.notNull ? '(必填)' : ''}`;
+                
+                const input = document.createElement('input');
+                input.type = col.type.toLowerCase().includes('int') ? 'number' : 'text';
+                input.className = 'w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary/50';
+                input.name = col.name;
+                if (col.primaryKey && col.notNull) input.required = true;
+                if (col.notNull && !col.primaryKey) input.required = true;
+                
+                formGroup.appendChild(label);
+                formGroup.appendChild(input);
+                formContainer.appendChild(formGroup);
+            });
+        }
+
+        // 保存编辑数据
+        function saveEditedData() {
+            try {
+                const inputs = document.querySelectorAll('#form-container input');
+                const updates = [];
+                const whereClauses = [];
+                
+                inputs.forEach(input => {
+                    const colName = input.name;
+                    const value = input.value;
+                    
+                    // 找到主键列
+                    const pkCol = tableColumns.find(col => col.primaryKey);
+                    if (pkCol && colName === pkCol.name) {
+                        whereClauses.push(`${colName} = '${value}'`);
+                    } else {
+                        updates.push(`${colName} = '${value}'`);
+                    }
+                });
+                
+                if (updates.length === 0 || whereClauses.length === 0) {
+                    showMessage('没有可更新的数据或缺少主键条件', 'error');
+                    return;
+                }
+                
+                const sql = `UPDATE ${currentTable} SET ${updates.join(', ')} WHERE ${whereClauses.join(' AND ')}`;
+                // sql-editor
+                setTimeout(() => {
+                    document.getElementById('sql-editor').value = sql;
+                }, 500);
+                console.log(sql);
+                db.exec(sql);
+                
+                // 关闭弹窗
+                document.getElementById('edit-modal').classList.add('hidden');
+                
+                // 重新查询当前表的数据
+                document.getElementById('sql-editor').value = `SELECT * FROM ${currentTable}`;
+                document.getElementById('run-sql-btn').click();
+                
+                showMessage('数据更新成功', 'success');
+            } catch (error) {
+                showMessage(`更新数据失败: ${error.message}`, 'error');
+                console.error('更新数据错误:', error);
+            }
+        }
+
+        // 保存新增数据
+        function saveNewData() {
+            try {
+                const inputs = document.querySelectorAll('#add-form-container input');
+                const columns = [];
+                const values = [];
+                
+                inputs.forEach(input => {
+                    const colName = input.name;
+                    const value = input.value;
+                    
+                    if (input.required && !value) {
+                        showMessage(`${colName} 为必填项`, 'error');
+                        return;
+                    }
+                    
+                    columns.push(colName);
+                    values.push(`'${value}'`);
+                });
+                
+                const sql = `INSERT INTO ${currentTable} (${columns.join(', ')}) VALUES (${values.join(', ')})`;
+                // sql-editor
+                setTimeout(() => {
+                    document.getElementById('sql-editor').value = sql;
+                }, 500);
+                console.log(sql);
+                db.exec(sql);
+                
+                // 关闭弹窗
+                document.getElementById('add-modal').classList.add('hidden');
+                
+                // 重新查询当前表的数据
+                document.getElementById('sql-editor').value = `SELECT * FROM ${currentTable}`;
+                document.getElementById('run-sql-btn').click();
+                
+                showMessage('数据添加成功', 'success');
+            } catch (error) {
+                showMessage(`添加数据失败: ${error.message}`, 'error');
+                console.error('添加数据错误:', error);
+            }
+        }
+
+        // 删除数据
+        function deleteData(rowData) {
+            if (!confirm('确定要删除这条数据吗？此操作不可恢复！')) {
+                return;
+            }
+            
+            try {
+                const pkCol = tableColumns.find(col => col.primaryKey);
+                if (!pkCol) {
+                    showMessage('无法找到主键列，无法删除数据', 'error');
+                    return;
+                }
+                
+                const pkValue = rowData[pkCol.name];
+                const sql = `DELETE FROM ${currentTable} WHERE ${pkCol.name} = '${pkValue}'`;
+                // sql-editor
+                setTimeout(() => {
+                    document.getElementById('sql-editor').value = sql;
+                }, 500);
+                console.log(sql);
+                db.exec(sql);
+                
+                // 重新查询当前表的数据
+                document.getElementById('sql-editor').value = `SELECT * FROM ${currentTable}`;
+                document.getElementById('run-sql-btn').click();
+                
+                showMessage('数据删除成功', 'success');
+            } catch (error) {
+                showMessage(`删除数据失败: ${error.message}`, 'error');
+                console.error('删除数据错误:', error);
+            }
+        }
+
+        // 页面加载完成后初始化
+        document.addEventListener('DOMContentLoaded', async () => {
+            // 获取所有DOM元素
+            const elements = {
+                fileUpload: document.getElementById('file-upload'),
+                newDbBtn: document.getElementById('new-db-btn'),
+                saveDbBtn: document.getElementById('save-db-btn'),
+                runSqlBtn: document.getElementById('run-sql-btn'),
+                clearSqlBtn: document.getElementById('clear-sql-btn'),
+                sqlEditor: document.getElementById('sql-editor'),
+                tableList: document.getElementById('table-list'),
+                resultContainer: document.getElementById('result-container'),
+                resultHeader: document.getElementById('result-header'),
+                resultBody: document.getElementById('result-body'),
+                executionStatus: document.getElementById('execution-status'),
+                mainContainer: document.getElementById('main-container'),
+                dragOverlay: document.getElementById('drag-overlay'),
+                loadingOverlay: document.getElementById('loading-overlay'),
+                loadingStatus: document.getElementById('loading-status'),
+                reloadBtn: document.getElementById('reload-btn'),
+                resultMessage: document.getElementById('result-message'),
+                addDataBtn: document.getElementById('add-data-btn'),
+                editModal: document.getElementById('edit-modal'),
+                closeModal: document.getElementById('close-modal'),
+                cancelBtn: document.getElementById('cancel-btn'),
+                saveBtn: document.getElementById('save-btn'),
+                addModal: document.getElementById('add-modal'),
+                closeAddModal: document.getElementById('close-add-modal'),
+                cancelAddBtn: document.getElementById('cancel-add-btn'),
+                saveAddBtn: document.getElementById('save-add-btn'),
+                modalTitle: document.getElementById('modal-title')
+            };
+
+            // 禁用按钮直到 SQL.js 加载完成
+            elements.newDbBtn.disabled = true;
+            elements.runSqlBtn.disabled = true;
+            elements.saveDbBtn.disabled = true;
+
+            try {
+                // 初始化 SQL.js (带超时处理)
+                elements.loadingStatus.textContent = '正在加载 SQLite 引擎 (1/3)...';
+                await initSqlJsWithTimeout();
+                
+                // 隐藏加载遮罩
+                elements.loadingOverlay.classList.add('hidden');
+                
+                // 更新初始状态
+                elements.tableList.innerHTML = '<div class="text-gray-500 italic">未选择数据库文件</div>';
+                showMessage('执行 SQL 后将显示结果', 'info');
+                elements.sqlEditor.placeholder = `输入 SQL 语句，例如：
+SELECT * FROM table_name;
+CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT);
+INSERT INTO test (name) VALUES ('SQLite Test');`;
+                
+                // 启用按钮
+                elements.newDbBtn.disabled = false;
+                elements.runSqlBtn.disabled = false;
+
+            } catch (error) {
+                // 加载失败处理
+                elements.loadingStatus.textContent = `加载失败: ${error.message}`;
+                elements.loadingOverlay.classList.add('error');
+                elements.reloadBtn.classList.remove('hidden'); // 显示重试按钮
+                showMessage(`SQLite 引擎加载失败: ${error.message}`, 'error');
+                elements.tableList.innerHTML = `<div class="text-red-500">${error.message}</div>`;
+                console.error('初始化失败:', error);
+                return;
+            }
+
+            // ========== 模态框事件 ==========
+            // 关闭编辑弹窗
+            elements.closeModal.addEventListener('click', () => {
+                elements.editModal.classList.add('hidden');
+            });
+            elements.cancelBtn.addEventListener('click', () => {
+                elements.editModal.classList.add('hidden');
+            });
+            
+            // 保存编辑数据
+            elements.saveBtn.addEventListener('click', saveEditedData);
+            
+            // 关闭添加弹窗
+            elements.closeAddModal.addEventListener('click', () => {
+                elements.addModal.classList.add('hidden');
+            });
+            elements.cancelAddBtn.addEventListener('click', () => {
+                elements.addModal.classList.add('hidden');
+            });
+            
+            // 保存新增数据
+            elements.saveAddBtn.addEventListener('click', saveNewData);
+            
+            // 点击添加数据按钮
+            elements.addDataBtn.addEventListener('click', () => {
+                if (!currentTable) {
+                    showMessage('请先选择数据表', 'error');
+                    return;
+                }
+                
+                // 获取列信息并生成表单
+                tableColumns = getTableColumns(currentTable);
+                generateAddForm();
+                
+                // 显示添加弹窗
+                elements.addModal.classList.remove('hidden');
+            });
+
+            // ========== 文件拖入功能 ==========
+            // 阻止默认拖放行为
+            ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+                document.body.addEventListener(eventName, (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                }, false);
+                elements.mainContainer.addEventListener(eventName, (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                }, false);
+            });
+
+            // 高亮拖入区域
+            ['dragenter', 'dragover'].forEach(eventName => {
+                elements.mainContainer.addEventListener(eventName, () => {
+                    elements.mainContainer.classList.add('drag-over');
+                }, false);
+                document.body.addEventListener(eventName, () => {
+                    elements.dragOverlay.classList.remove('hidden');
+                }, false);
+            });
+
+            // 取消高亮
+            ['dragleave', 'drop'].forEach(eventName => {
+                elements.mainContainer.addEventListener(eventName, () => {
+                    elements.mainContainer.classList.remove('drag-over');
+                }, false);
+                document.body.addEventListener(eventName, () => {
+                    elements.dragOverlay.classList.add('hidden');
+                }, false);
+            });
+
+            // 处理文件拖放
+            const handleDrop = (e) => {
+                const dt = e.dataTransfer;
+                const files = dt.files;
+                
+                if (files.length) {
+                    handleFiles(files);
+                }
+            };
+            document.body.addEventListener('drop', handleDrop, false);
+            elements.mainContainer.addEventListener('drop', handleDrop, false);
+
+            // ========== 统一文件处理逻辑 ==========
+            const handleFiles = (files) => {
+                if (!isSqlJsLoaded) {
+                    showMessage('请先等待 SQLite 引擎加载完成', 'error');
+                    return;
+                }
+
+                const file = files[0];
+                if (!file) return;
+
+                // 检查文件类型
+                const allowedExtensions = ['.db', '.sqlite', '.sqlite3'];
+                const fileName = file.name.toLowerCase();
+                const fileExt = fileName.slice(fileName.lastIndexOf('.'));
+                
+                if (!allowedExtensions.includes(fileExt)) {
+                    showMessage(`不支持的文件类型: ${fileExt}，请上传 .db/.sqlite/.sqlite3 格式的文件`, 'error');
+                    return;
+                }
+
+                // 加载文件
+                try {
+                    showMessage(`正在加载文件: ${file.name} (${formatFileSize(file.size)})`, 'info');
+                    
+                    const reader = new FileReader();
+                    
+                    reader.onload = (event) => {
+                        try {
+                            const arrayBuffer = event.target.result;
+                            const uInt8Array = new Uint8Array(arrayBuffer);
+                            
+                            // 验证文件大小
+                            if (uInt8Array.length < 16) {
+                                throw new Error('文件太小，不是有效的 SQLite 数据库文件');
+                            }
+                            
+                            // 安全创建数据库实例
+                            db = createDatabase(uInt8Array);
+                            
+                            // 更新表列表
+                            updateTableList();
+                            
+                            // 显示保存按钮
+                            elements.saveDbBtn.classList.remove('hidden');
+                            elements.saveDbBtn.disabled = false;
+                            
+                            // 重置结果区域
+                            elements.resultContainer.classList.add('hidden');
+                            elements.executionStatus.classList.add('hidden');
+                            elements.addDataBtn.classList.add('hidden');
+                            
+                            showMessage(`成功加载数据库文件: ${file.name}`, 'success');
+                            
+                        } catch (error) {
+                            showMessage(`解析数据库失败: ${error.message}`, 'error');
+                            console.error('数据库解析错误:', error);
+                        }
+                    };
+                    
+                    reader.onerror = (error) => {
+                        showMessage(`读取文件失败: ${error.message}`, 'error');
+                        console.error('文件读取错误:', error);
+                    };
+                    
+                    reader.readAsArrayBuffer(file);
+                    
+                } catch (error) {
+                    showMessage(`加载文件失败: ${error.message}`, 'error');
+                    console.error('文件加载错误:', error);
+                }
+            };
+
+            // 格式化文件大小
+            const formatFileSize = (bytes) => {
+                if (bytes < 1024) return bytes + ' B';
+                if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+                return (bytes / 1048576).toFixed(1) + ' MB';
+            };
+
+            // ========== 上传文件逻辑 ==========
+            elements.fileUpload.addEventListener('change', (e) => {
+                const files = e.target.files;
+                if (files.length) {
+                    handleFiles(files);
+                    // 清空文件输入，允许重复上传同一文件
+                    elements.fileUpload.value = '';
+                }
+            });
+
+            // ========== 新建数据库 ==========
+            elements.newDbBtn.addEventListener('click', () => {
+                if (!isSqlJsLoaded) {
+                    showMessage('请先等待 SQLite 引擎加载完成', 'error');
+                    return;
+                }
+
+                if (db && !confirm('确定要新建数据库吗？当前数据将丢失！')) {
+                    return;
+                }
+
+                try {
+                    // 安全创建空数据库
+                    db = createDatabase();
+                    
+                    // 更新表列表
+                    updateTableList();
+                    
+                    // 显示保存按钮
+                    elements.saveDbBtn.classList.remove('hidden');
+                    elements.saveDbBtn.disabled = false;
+                    
+                    // 重置结果区域
+                    elements.resultContainer.classList.add('hidden');
+                    elements.executionStatus.classList.add('hidden');
+                    elements.addDataBtn.classList.add('hidden');
+                    
+                    showMessage('已创建新的空数据库', 'success');
+                    
+                } catch (error) {
+                    showMessage(`创建数据库失败: ${error.message}`, 'error');
+                    console.error('创建数据库错误:', error);
+                }
+            });
+
+            // ========== 保存数据库文件 ==========
+            elements.saveDbBtn.addEventListener('click', () => {
+                if (!db) {
+                    showMessage('请先创建或加载数据库', 'error');
+                    return;
+                }
+
+                try {
+                    showMessage('正在生成数据库文件...', 'info');
+                    
+                    // 导出数据库
+                    const data = db.export();
+                    const blob = new Blob([data], { type: 'application/x-sqlite3' });
+                    const url = URL.createObjectURL(blob);
+                    
+                    // 创建下载链接
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `sqlite-db-${new Date().toISOString().slice(0, 10)}.db`;
+                    document.body.appendChild(a);
+                    a.click();
+                    
+                    // 清理
+                    setTimeout(() => {
+                        document.body.removeChild(a);
+                        URL.revokeObjectURL(url);
+                    }, 100);
+                    
+                    showMessage('数据库文件已保存', 'success');
+                    
+                } catch (error) {
+                    showMessage(`保存文件失败: ${error.message}`, 'error');
+                    console.error('保存文件错误:', error);
+                }
+            });
+
+            // ========== 执行SQL ==========
+            elements.runSqlBtn.addEventListener('click', () => {
+                if (!isSqlJsLoaded) {
+                    showMessage('请先等待 SQLite 引擎加载完成', 'error');
+                    return;
+                }
+
+                if (!db) {
+                    showMessage('请先上传或创建数据库文件', 'error');
+                    return;
+                }
+
+                const sql = elements.sqlEditor.value.trim();
+                
+                if (!sql) {
+                    showMessage('请输入有效的 SQL 语句', 'error');
+                    return;
+                }
+
+                try {
+                    const startTime = performance.now();
+                    
+                    // 执行SQL
+                    const results = db.exec(sql);
+                    
+                        document.getElementById('sql-editor').value = sql;
+                    
+                    console.log(sql);// 延迟1.5秒后打印SQL语句
+
+                    const endTime = performance.now();
+                    const executionTime = (endTime - startTime).toFixed(2);
+
+                    // 清空之前的结果
+                    elements.resultHeader.innerHTML = '';
+                    elements.resultBody.innerHTML = '';
+                    elements.resultContainer.classList.add('hidden');
+                    
+                    if (!results || results.length === 0) {
+                        // 无返回结果的SQL (INSERT, UPDATE, DELETE等)
+                        showMessage('SQL 执行成功（无返回结果）', 'success');
+                        // elements.executionStatus.textContent = `执行时间: ${executionTime}ms | 影响行数: ${db.getRowsModified()}`;
+                        // elements.executionStatus.classList.remove('hidden', 'text-red-500');
+                        // elements.executionStatus.classList.add('text-green-600');
+                        updateTableList(); // 更新表列表
+                        elements.addDataBtn.classList.add('hidden');
+                    } else {
+                        // 有返回结果的SQL (SELECT等)
+                        showMessage('SQL 执行成功，返回以下结果', 'success');
+                        // elements.executionStatus.textContent = `执行时间: ${executionTime}ms | 返回行数: ${results[0].values.length}`;
+                        // elements.executionStatus.classList.remove('hidden', 'text-red-500');
+                        // elements.executionStatus.classList.add('text-green-600');
+                        
+                        // 显示添加数据按钮
+                        elements.addDataBtn.classList.remove('hidden');
+                        
+                        // 构建表头（增加操作列）
+                        const headerRow = document.createElement('tr');
+                        results[0].columns.forEach(col => {
+                            const th = document.createElement('th');
+                            th.className = 'px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider';
+                            th.textContent = col;
+                            headerRow.appendChild(th);
+                        });
+                        // 添加操作列表头
+                        const actionTh = document.createElement('th');
+                        actionTh.className = 'px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider';
+                        actionTh.textContent = '操作';
+                        headerRow.appendChild(actionTh);
+                        
+                        elements.resultHeader.appendChild(headerRow);
+                        
+                        // 构建表体（增加操作按钮）
+                        results[0].values.forEach((row, index) => {
+                            const tr = document.createElement('tr');
+                            tr.className = 'hover:bg-gray-50';
+                            
+                            // 存储行数据
+                            const rowData = {};
+                            results[0].columns.forEach((col, i) => {
+                                rowData[col] = row[i];
+                                
+                                const td = document.createElement('td');
+                                td.className = 'px-4 py-3 whitespace-nowrap text-sm text-gray-900';
+                                td.textContent = row[i] !== null ? row[i] : 'NULL';
+                                tr.appendChild(td);
+                            });
+                            
+                            // 操作列
+                            const actionTd = document.createElement('td');
+                            actionTd.className = 'px-4 py-3 whitespace-nowrap text-sm';
+                            
+                            // 编辑按钮
+                            const editBtn = document.createElement('button');
+                            editBtn.className = 'action-btn edit-btn mr-1';
+                            editBtn.innerHTML = '<i class="fa fa-edit mr-1"></i> 编辑';
+                            editBtn.addEventListener('click', () => {
+                                currentRowData = rowData;
+                                tableColumns = getTableColumns(currentTable);
+                                generateEditForm(rowData);
+                                elements.modalTitle.textContent = `编辑 ${currentTable} 数据`;
+                                elements.editModal.classList.remove('hidden');
+                            });
+                            
+                            // 删除按钮
+                            const deleteBtn = document.createElement('button');
+                            deleteBtn.className = 'action-btn delete-btn';
+                            deleteBtn.innerHTML = '<i class="fa fa-trash mr-1"></i> 删除';
+                            deleteBtn.addEventListener('click', () => deleteData(rowData));
+                            
+                            actionTd.appendChild(editBtn);
+                            actionTd.appendChild(deleteBtn);
+                            tr.appendChild(actionTd);
+                            
+                            elements.resultBody.appendChild(tr);
+                        });
+                        
+                        elements.resultContainer.classList.remove('hidden');
+                    }
+                    
+                } catch (error) {
+                    showMessage(`SQL 执行错误: ${error.message}`, 'error');
+                    elements.executionStatus.classList.remove('hidden', 'text-green-600');
+                    elements.executionStatus.classList.add('text-red-500');
+                    console.error('SQL执行错误:', error);
+                    // 即使执行失败，也更新表列表
+                    updateTableList();
+                }
+            });
+
+            // ========== 清空SQL编辑器 ==========
+            elements.clearSqlBtn.addEventListener('click', () => {
+                elements.sqlEditor.value = '';
+                elements.addDataBtn.classList.add('hidden');
+                showMessage('SQL 编辑器已清空', 'info');
+            });
+
+            // ========== 更新数据表列表 ==========
+            function updateTableList() {
+                elements.tableList.innerHTML = '';
+                
+                // 检查数据库是否初始化
+                if (!db) {
+                    const emptyItem = document.createElement('div');
+                    emptyItem.className = 'text-gray-500 italic';
+                    emptyItem.textContent = '未选择数据库文件,文件:.db,.sqlite,.sqlite3';
+                    elements.tableList.appendChild(emptyItem);
+                    return;
+                }
+
+                try {
+                    // 执行查询获取表列表（更健壮的SQL）
+                    const tableInfo = db.exec(`
+                        SELECT name 
+                        FROM sqlite_master 
+                        WHERE type='table' 
+                        AND name NOT LIKE 'sqlite_%' 
+                        AND name NOT LIKE 'temp_%'
+                        ORDER BY name COLLATE NOCASE
+                    `);
+                    
+                    // 处理空结果
+                    if (!tableInfo || tableInfo.length === 0 || !tableInfo[0] || !tableInfo[0].values || tableInfo[0].values.length === 0) {
+                        const emptyItem = document.createElement('div');
+                        emptyItem.className = 'text-gray-500 italic';
+                        emptyItem.textContent = '数据库中暂无数据表';
+                        elements.tableList.appendChild(emptyItem);
+                        return;
+                    }
+                    
+                    // 生成表列表项
+                    tableInfo[0].values.forEach(([tableName]) => {
+                        if (!tableName) return;
+                        
+                        const tableItem = document.createElement('div');
+                        tableItem.className = 'bg-neutral rounded-md p-2 hover:bg-primary/10 transition-all cursor-pointer';
+                        tableItem.innerHTML = `
+                            <div class="flex items-center justify-between">
+                                <span class="font-medium">${tableName}</span>
+                                <button class="text-primary hover:text-primary/80 view-table-btn" data-table="${tableName}">
+                                    <i class="fa fa-eye"></i>
+                                </button>
+                            </div>
+                        `;
+                        elements.tableList.appendChild(tableItem);
+                        
+                        // 查看表数据 - 核心修改：自动执行查询
+                        tableItem.querySelector('.view-table-btn').addEventListener('click', () => {
+                            currentTable = tableName;
+                            // 使用反引号包裹表名，支持特殊字符
+                            elements.sqlEditor.value = `SELECT * FROM \`${tableName}\`;`;
+                            showMessage(`已自动填充并执行查询语句: SELECT * FROM ${tableName}`, 'info');
+                            // 自动点击执行按钮
+                            elements.runSqlBtn.click();
+                        });
+                    });
+                    
+                } catch (error) {
+                    console.error('获取表列表失败:', error);
+                    const errorItem = document.createElement('div');
+                    errorItem.className = 'text-red-500';
+                    errorItem.textContent = `获取表列表失败: ${error.message}`;
+                    elements.tableList.appendChild(errorItem);
+                }
+            }
+
+            // ========== 响应式调整 ==========
+            function adjustEditorHeight() {
+                const isMobile = window.innerWidth < 768;
+                elements.sqlEditor.classList.toggle('mobile-editor-height', isMobile);
+                elements.sqlEditor.classList.toggle('editor-height', !isMobile);
+                elements.resultContainer.classList.toggle('mobile-table-scroll', isMobile);
+                elements.resultContainer.classList.toggle('table-scroll', !isMobile);
+            }
+
+            // 窗口大小变化时调整
+            window.addEventListener('resize', adjustEditorHeight);
+            adjustEditorHeight(); // 初始调整
+            
+            // 初始更新表列表
+            updateTableList();
+        });
+    </script>
+</body>
+</html>
