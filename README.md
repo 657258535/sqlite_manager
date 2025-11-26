@@ -4,6 +4,12 @@
 
 SQLite 在线管理器是一个基于 Web 的 SQLite 数据库管理工具，允许用户在浏览器中直接操作 SQLite 数据库文件，无需安装任何软件。所有操作均在本地完成，数据不会上传到服务器，保护用户数据隐私。
 
+## 演示网站
+
+您可以在以下链接查看 SQLite 在线管理器的在线演示：
+
+[https://657258535.github.io/sqlite_manager/sqlite.html](https://657258535.github.io/sqlite_manager/sqlite.html)
+
 ## 主要功能
 
 - 📁 **文件操作**
