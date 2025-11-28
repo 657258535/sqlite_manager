@@ -1081,9 +1081,14 @@ INSERT INTO test (name) VALUES ('SQLite Test');`;
                         tableItem.innerHTML = `
                             <div class="flex items-center justify-between">
                                 <span class="font-medium">${tableName}</span>
-                                <button class="text-primary hover:text-primary/80 view-table-btn" data-table="${tableName}">
-                                    <i class="fa fa-eye"></i>
-                                </button>
+                                <div class="flex space-x-2">
+                                    <button class="text-primary hover:text-primary/80 view-table-btn" data-table="${tableName}">
+                                        <i class="fa fa-eye"></i>
+                                    </button>
+                                    <button class="text-red-500 hover:text-red-600 delete-table-btn" data-table="${tableName}">
+                                        <i class="fa fa-trash"></i>
+                                    </button>
+                                </div>
                             </div>
                         `;
                         elements.tableList.appendChild(tableItem);
@@ -1096,6 +1101,30 @@ INSERT INTO test (name) VALUES ('SQLite Test');`;
                             showMessage(`已自动填充并执行查询语句: SELECT * FROM ${tableName}`, 'info');
                             // 自动点击执行按钮
                             elements.runSqlBtn.click();
+                        });
+                        
+                        // 删除表功能
+                        tableItem.querySelector('.delete-table-btn').addEventListener('click', (e) => {
+                            // 阻止事件冒泡，避免触发查看表数据
+                            e.stopPropagation();
+                            
+                            if (confirm(`确定要删除表 "${tableName}" 吗？此操作不可恢复！`)) {
+                                try {
+                                    // 执行删除表操作
+                                    db.exec(`DROP TABLE IF EXISTS \`${tableName}\`;`);
+                                    showMessage(`表 "${tableName}" 已成功删除`, 'success');
+                                    // 更新表列表
+                                    updateTableList();
+                                    // 如果当前查看的是被删除的表，清空结果区域
+                                    if (currentTable === tableName) {
+                                        elements.resultContainer.classList.add('hidden');
+                                        elements.addDataBtn.classList.add('hidden');
+                                    }
+                                } catch (error) {
+                                    showMessage(`删除表失败: ${error.message}`, 'error');
+                                    console.error('删除表错误:', error);
+                                }
+                            }
                         });
                     });
                     
