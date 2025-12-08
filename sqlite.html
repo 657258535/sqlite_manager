@@ -270,11 +270,15 @@
             <div id="result-message" class="mb-3 text-gray-600 italic">SQLite 引擎加载中...</div>
             
             <!-- 结果表格 -->
-            <div id="result-container" class="hidden overflow-x-auto table-scroll md:table-scroll mobile-table-scroll">
-                <table class="min-w-full divide-y divide-gray-200">
-                    <thead id="result-header" class="bg-gray-50"></thead>
-                    <tbody id="result-body" class="bg-white divide-y divide-gray-200"></tbody>
-                </table>
+            <div id="result-container" class="hidden">
+                <div class="overflow-x-auto table-scroll md:table-scroll mobile-table-scroll mb-4">
+                    <table class="min-w-full divide-y divide-gray-200">
+                        <thead id="result-header" class="bg-gray-50"></thead>
+                        <tbody id="result-body" class="bg-white divide-y divide-gray-200"></tbody>
+                    </table>
+                </div>
+                <!-- 分页控件 -->
+                <div id="pagination" class="flex justify-center items-center space-x-1 text-sm"></div>
             </div>
             
             <!-- 执行状态 -->
@@ -591,10 +595,19 @@
             }
         }
 
+        // 分页相关变量
+        let currentPage = 1;
+        const pageSize = 500;
+        let totalRows = 0;
+        let totalPages = 0;
+        let currentResults = null;
+        let currentQueryColumns = null;
+
         // 页面加载完成后初始化
         document.addEventListener('DOMContentLoaded', async () => {
             // 获取所有DOM元素
             const elements = {
+                pagination: document.getElementById('pagination'),
                 fileUpload: document.getElementById('file-upload'),
                 newDbBtn: document.getElementById('new-db-btn'),
                 saveDbBtn: document.getElementById('save-db-btn'),
@@ -958,68 +971,23 @@ INSERT INTO test (name) VALUES ('SQLite Test');`;
                         // 显示添加数据按钮
                         elements.addDataBtn.classList.remove('hidden');
                         
+                        // 保存当前结果和列信息
+                        currentResults = results[0].values;
+                        currentQueryColumns = results[0].columns;
+                        totalRows = currentResults.length;
+                        totalPages = Math.ceil(totalRows / pageSize);
+                        currentPage = 1; // 重置到第一页
+                        
                         // 构建表头（增加操作列）
-                        const headerRow = document.createElement('tr');
-                        results[0].columns.forEach(col => {
-                            const th = document.createElement('th');
-                            th.className = 'px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider';
-                            th.textContent = col;
-                            headerRow.appendChild(th);
-                        });
-                        // 添加操作列表头
-                        const actionTh = document.createElement('th');
-                        actionTh.className = 'px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider';
-                        actionTh.textContent = '操作';
-                        headerRow.appendChild(actionTh);
+                        buildTableHeader(currentQueryColumns);
                         
-                        elements.resultHeader.appendChild(headerRow);
+                        // 显示第一页数据
+                        displayPage(currentPage);
                         
-                        // 构建表体（增加操作按钮）
-                        results[0].values.forEach((row, index) => {
-                            const tr = document.createElement('tr');
-                            tr.className = 'hover:bg-gray-50';
-                            
-                            // 存储行数据
-                            const rowData = {};
-                            results[0].columns.forEach((col, i) => {
-                                rowData[col] = row[i];
-                                
-                                const td = document.createElement('td');
-                                td.className = 'px-4 py-3 whitespace-nowrap text-sm text-gray-900';
-                                td.textContent = row[i] !== null ? row[i] : 'NULL';
-                                tr.appendChild(td);
-                            });
-                            
-                            // 操作列
-                            const actionTd = document.createElement('td');
-                            actionTd.className = 'px-4 py-3 whitespace-nowrap text-sm';
-                            
-                            // 编辑按钮
-                            const editBtn = document.createElement('button');
-                            editBtn.className = 'action-btn edit-btn mr-1';
-                            editBtn.innerHTML = '<i class="fa fa-edit mr-1"></i> 编辑';
-                            editBtn.addEventListener('click', () => {
-                                currentRowData = rowData;
-                                tableColumns = getTableColumns(currentTable);
-                                generateEditForm(rowData);
-                                elements.modalTitle.textContent = `编辑 ${currentTable} 数据`;
-                                elements.editModal.classList.remove('hidden');
-                            });
-                            
-                            // 删除按钮
-                            const deleteBtn = document.createElement('button');
-                            deleteBtn.className = 'action-btn delete-btn';
-                            deleteBtn.innerHTML = '<i class="fa fa-trash mr-1"></i> 删除';
-                            deleteBtn.addEventListener('click', () => deleteData(rowData));
-                            
-                            actionTd.appendChild(editBtn);
-                            actionTd.appendChild(deleteBtn);
-                            tr.appendChild(actionTd);
-                            
-                            elements.resultBody.appendChild(tr);
-                        });
+                        // 生成分页控件
+                        generatePagination();
                         
-                        elements.resultContainer.classList.remove('hidden');
+                        elements.resultContainer.classList.remove('hidden')
                     }
                     
                 } catch (error) {
@@ -1137,13 +1105,168 @@ INSERT INTO test (name) VALUES ('SQLite Test');`;
                 }
             }
 
+            // 构建表头
+            function buildTableHeader(columns) {
+                elements.resultHeader.innerHTML = '';
+                const headerRow = document.createElement('tr');
+                columns.forEach(col => {
+                    const th = document.createElement('th');
+                    th.className = 'px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider';
+                    th.textContent = col;
+                    headerRow.appendChild(th);
+                });
+                // 添加操作列表头
+                const actionTh = document.createElement('th');
+                actionTh.className = 'px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider';
+                actionTh.textContent = '操作';
+                headerRow.appendChild(actionTh);
+                elements.resultHeader.appendChild(headerRow);
+            }
+            
+            // 显示指定页的数据
+            function displayPage(page) {
+                elements.resultBody.innerHTML = '';
+                
+                if (!currentResults || !currentQueryColumns) return;
+                
+                const startIndex = (page - 1) * pageSize;
+                const endIndex = Math.min(startIndex + pageSize, totalRows);
+                
+                for (let i = startIndex; i < endIndex; i++) {
+                    const row = currentResults[i];
+                    const tr = document.createElement('tr');
+                    tr.className = 'hover:bg-gray-50';
+                    
+                    // 存储行数据
+                    const rowData = {};
+                    currentQueryColumns.forEach((col, j) => {
+                        rowData[col] = row[j];
+                        
+                        const td = document.createElement('td');
+                        td.className = 'px-4 py-3 whitespace-nowrap text-sm text-gray-900';
+                        td.textContent = row[j] !== null ? row[j] : 'NULL';
+                        tr.appendChild(td);
+                    });
+                    
+                    // 操作列
+                    const actionTd = document.createElement('td');
+                    actionTd.className = 'px-4 py-3 whitespace-nowrap text-sm';
+                    
+                    // 编辑按钮
+                    const editBtn = document.createElement('button');
+                    editBtn.className = 'action-btn edit-btn mr-1';
+                    editBtn.innerHTML = '<i class="fa fa-edit mr-1"></i> 编辑';
+                    editBtn.addEventListener('click', () => {
+                        currentRowData = rowData;
+                        tableColumns = getTableColumns(currentTable);
+                        generateEditForm(rowData);
+                        elements.modalTitle.textContent = `编辑 ${currentTable} 数据`;
+                        elements.editModal.classList.remove('hidden');
+                    });
+                    
+                    // 删除按钮
+                    const deleteBtn = document.createElement('button');
+                    deleteBtn.className = 'action-btn delete-btn';
+                    deleteBtn.innerHTML = '<i class="fa fa-trash mr-1"></i> 删除';
+                    deleteBtn.addEventListener('click', () => deleteData(rowData));
+                    
+                    actionTd.appendChild(editBtn);
+                    actionTd.appendChild(deleteBtn);
+                    tr.appendChild(actionTd);
+                    
+                    elements.resultBody.appendChild(tr);
+                }
+            }
+            
+            // 生成分页控件
+            function generatePagination() {
+                elements.pagination.innerHTML = '';
+                
+                if (totalPages <= 1) return;
+                
+                // 首页按钮
+                const firstPageBtn = document.createElement('button');
+                firstPageBtn.className = `px-3 py-1 rounded-md ${currentPage === 1 ? 'bg-gray-200 cursor-not-allowed' : 'bg-white border border-gray-300 hover:bg-gray-50'}`;
+                firstPageBtn.innerHTML = '<i class="fa fa-angle-double-left"></i>';
+                firstPageBtn.disabled = currentPage === 1;
+                firstPageBtn.addEventListener('click', () => goToPage(1));
+                elements.pagination.appendChild(firstPageBtn);
+                
+                // 上一页按钮
+                const prevPageBtn = document.createElement('button');
+                prevPageBtn.className = `px-3 py-1 rounded-md ${currentPage === 1 ? 'bg-gray-200 cursor-not-allowed' : 'bg-white border border-gray-300 hover:bg-gray-50'}`;
+                prevPageBtn.innerHTML = '<i class="fa fa-angle-left"></i>';
+                prevPageBtn.disabled = currentPage === 1;
+                prevPageBtn.addEventListener('click', () => goToPage(currentPage - 1));
+                elements.pagination.appendChild(prevPageBtn);
+                
+                // 页码按钮
+                const startPage = Math.max(1, currentPage - 2);
+                const endPage = Math.min(totalPages, currentPage + 2);
+                
+                // 省略号（开头）
+                if (startPage > 1) {
+                    const ellipsisStart = document.createElement('span');
+                    ellipsisStart.className = 'px-3 py-1';
+                    ellipsisStart.textContent = '...';
+                    elements.pagination.appendChild(ellipsisStart);
+                }
+                
+                for (let i = startPage; i <= endPage; i++) {
+                    const pageBtn = document.createElement('button');
+                    pageBtn.className = `px-3 py-1 rounded-md ${currentPage === i ? 'bg-primary text-white' : 'bg-white border border-gray-300 hover:bg-gray-50'}`;
+                    pageBtn.textContent = i;
+                    pageBtn.addEventListener('click', () => goToPage(i));
+                    elements.pagination.appendChild(pageBtn);
+                }
+                
+                // 省略号（结尾）
+                if (endPage < totalPages) {
+                    const ellipsisEnd = document.createElement('span');
+                    ellipsisEnd.className = 'px-3 py-1';
+                    ellipsisEnd.textContent = '...';
+                    elements.pagination.appendChild(ellipsisEnd);
+                }
+                
+                // 下一页按钮
+                const nextPageBtn = document.createElement('button');
+                nextPageBtn.className = `px-3 py-1 rounded-md ${currentPage === totalPages ? 'bg-gray-200 cursor-not-allowed' : 'bg-white border border-gray-300 hover:bg-gray-50'}`;
+                nextPageBtn.innerHTML = '<i class="fa fa-angle-right"></i>';
+                nextPageBtn.disabled = currentPage === totalPages;
+                nextPageBtn.addEventListener('click', () => goToPage(currentPage + 1));
+                elements.pagination.appendChild(nextPageBtn);
+                
+                // 尾页按钮
+                const lastPageBtn = document.createElement('button');
+                lastPageBtn.className = `px-3 py-1 rounded-md ${currentPage === totalPages ? 'bg-gray-200 cursor-not-allowed' : 'bg-white border border-gray-300 hover:bg-gray-50'}`;
+                lastPageBtn.innerHTML = '<i class="fa fa-angle-double-right"></i>';
+                lastPageBtn.disabled = currentPage === totalPages;
+                lastPageBtn.addEventListener('click', () => goToPage(totalPages));
+                elements.pagination.appendChild(lastPageBtn);
+                
+                // 页码信息
+                const pageInfo = document.createElement('span');
+                pageInfo.className = 'ml-4 px-3 py-1';
+                pageInfo.textContent = `第 ${currentPage} / ${totalPages} 页，共 ${totalRows} 条记录`;
+                elements.pagination.appendChild(pageInfo);
+            }
+            
+            // 跳转到指定页
+            function goToPage(page) {
+                if (page < 1 || page > totalPages) return;
+                
+                currentPage = page;
+                displayPage(currentPage);
+                generatePagination();
+            }
+            
             // ========== 响应式调整 ==========
             function adjustEditorHeight() {
                 const isMobile = window.innerWidth < 768;
                 elements.sqlEditor.classList.toggle('mobile-editor-height', isMobile);
                 elements.sqlEditor.classList.toggle('editor-height', !isMobile);
-                elements.resultContainer.classList.toggle('mobile-table-scroll', isMobile);
-                elements.resultContainer.classList.toggle('table-scroll', !isMobile);
+                elements.resultContainer.querySelector('.table-scroll, .mobile-table-scroll').classList.toggle('mobile-table-scroll', isMobile);
+                elements.resultContainer.querySelector('.table-scroll, .mobile-table-scroll').classList.toggle('table-scroll', !isMobile);
             }
 
             // 窗口大小变化时调整
